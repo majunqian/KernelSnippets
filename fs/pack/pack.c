@@ -1,19 +1,11 @@
-// 本文件示例了在Linux内核模块中实现tar风格的打包和解包功能。
-// 主要入口函数：
-//   - pack_path: 将指定路径(文件或目录)打包成tar格式归档文件
-//   - unpack_archive: 将tar格式归档解压到指定目录
-// 支持普通文件和目录的递归处理。未处理符号链接、设备文件等特殊类型。
+// 示例：内核空间实现tar风格的打包和解包，仅支持普通文件和目录。
+// 入口：pack_path/unpack_archive
 
-#include <linux/cred.h>
-#include <linux/dcache.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/slab.h>
-#include <linux/types.h>
-#include <linux/uidgid.h>
 
 #define PACK_HEADER_SIZE 512
 
@@ -28,35 +20,33 @@ MODULE_DESCRIPTION("TAR-like packing functionality in kernel space");
  * ===================== Structure Definitions =====================
  */
 
-/* TAR header structure */
+/* tar头部结构体，字段顺序和大小需严格符合tar格式 */
 struct pack_header {
-	char name[100];		/* file name */
-	char mode[8];		/* file mode */
-	char uid[8];		/* owner user ID */
-	char gid[8];		/* owner group ID */
-	char size[12];		/* file size in bytes */
-	char mtime[12];		/* last modification time */
-	char chksum[8];		/* checksum */
-	char typeflag;		/* file type */
-	char linkname[100];	/* name of linked file */
-	char magic[6];		/* magic number */
-	char version[2];	/* version */
-	char uname[32];		/* owner user name */
-	char gname[32];		/* owner group name */
-	char devmajor[8];	/* device major number */
-	char devminor[8];	/* device minor number */
-	char prefix[155];	/* path prefix */
-	char padding[12];	/* padding to 512 bytes */
+	char name[100]; /* file name */
+	char mode[8]; /* file mode */
+	char uid[8]; /* owner user ID */
+	char gid[8]; /* owner group ID */
+	char size[12]; /* file size in bytes */
+	char mtime[12]; /* last modification time */
+	char chksum[8]; /* checksum */
+	char typeflag; /* file type */
+	char linkname[100]; /* name of linked file */
+	char magic[6]; /* magic number */
+	char version[2]; /* version */
+	char uname[32]; /* owner user name */
+	char gname[32]; /* owner group name */
+	char devmajor[8]; /* device major number */
+	char devminor[8]; /* device minor number */
+	char prefix[155]; /* path prefix */
+	char padding[12]; /* padding to 512 bytes */
 };
 
-/* Pack operation structure */
 struct pack_info {
 	struct file *output_file;
 	loff_t offset;
 	size_t total_size;
 };
 
-/* Directory iteration context */
 struct pack_dir_context {
 	struct dir_context ctx;
 	struct pack_info *pack;
@@ -64,7 +54,6 @@ struct pack_dir_context {
 	int error;
 };
 
-/* Unpack operation structure */
 struct unpack_info {
 	struct file *input_file;
 	loff_t offset;
@@ -76,89 +65,58 @@ struct unpack_info {
  * ===================== Utility Functions =====================
  */
 
-/* Convert number to octal string */
+/* tar格式要求八进制字符串，最后一位为'\0'或' ' */
 static void num_to_oct(char *dst, unsigned long num, int size)
 {
-	char tmp[32];
-	int i = 0;
-	int j = 0;
-
-	if (num == 0) {
-		memset(dst, '0', size - 1);
-		dst[size - 1] = '\0';
-		return;
-	}
-
-	while (num > 0 && i < sizeof(tmp) - 1) {
-		tmp[i++] = '0' + (num & 7);
-		num >>= 3;
-	}
-
-	memset(dst, '0', size - 1);
-	for (j = 0; j < i && j < size - 1; j++)
-		dst[size - 2 - j] = tmp[j];
+	scnprintf(dst, size, "%0*lo", size - 1, num);
 	dst[size - 1] = '\0';
 }
 
-/* Convert octal string to number */
 static unsigned long oct_to_num(const char *oct_str, int size)
 {
-	unsigned long result = 0;
-	int i;
+	unsigned long val = 0;
+	char buf[32];
+	int ret;
 
-	for (i = 0; i < size - 1 && oct_str[i] != '\0' && 
-	     oct_str[i] != ' '; i++) {
-		if (oct_str[i] >= '0' && oct_str[i] <= '7')
-			result = result * 8 + (oct_str[i] - '0');
-	}
+	if (size >= sizeof(buf))
+		size = sizeof(buf) - 1;
+	memcpy(buf, oct_str, size);
+	buf[size] = '\0';
 
-	return result;
+	ret = kstrtoul(buf, 8, &val);
+	if (ret)
+		return 0;
+	return val;
 }
 
-/* Calculate checksum for header */
+/* 校验和计算时，chksum字段需填充空格 */
 static unsigned int calculate_checksum(struct pack_header *header)
 {
 	unsigned int sum = 0;
 	unsigned char *ptr = (unsigned char *)header;
 	int i;
 
-	/* Clear checksum field */
 	memset(header->chksum, ' ', 8);
-
-	/* Calculate sum */
 	for (i = 0; i < PACK_HEADER_SIZE; i++)
 		sum += ptr[i];
-
 	return sum;
 }
 
-/* Verify TAR header checksum */
 static int verify_checksum(struct pack_header *header)
 {
-	unsigned int calculated_sum = 0;
+	unsigned int calculated_sum;
 	unsigned int stored_sum;
-	unsigned char *ptr = (unsigned char *)header;
 	char chksum_backup[8];
-	int i;
 
-	/* Backup and clear checksum field */
 	memcpy(chksum_backup, header->chksum, 8);
-	memset(header->chksum, ' ', 8);
-
-	/* Calculate sum */
-	for (i = 0; i < PACK_HEADER_SIZE; i++)
-		calculated_sum += ptr[i];
-
-	/* Restore checksum field */
+	calculated_sum = calculate_checksum(header);
 	memcpy(header->chksum, chksum_backup, 8);
-
-	/* Get stored checksum */
 	stored_sum = oct_to_num(header->chksum, sizeof(header->chksum));
 
 	return (calculated_sum == stored_sum) ? 0 : -EINVAL;
 }
 
-/* Write data to output file */
+/* 只要写入长度不等于len就视为IO错误 */
 static int write_to_file(struct pack_info *pack, const void *data, size_t len)
 {
 	ssize_t written;
@@ -171,13 +129,12 @@ static int write_to_file(struct pack_info *pack, const void *data, size_t len)
 	return 0;
 }
 
-/* Read data from input file */
 static int read_from_file(struct unpack_info *unpack, void *data, size_t len)
 {
 	ssize_t bytes_read;
 
-	bytes_read = kernel_read(unpack->input_file, data, len, 
-				 &unpack->offset);
+	bytes_read =
+		kernel_read(unpack->input_file, data, len, &unpack->offset);
 	if (bytes_read != len)
 		return -EIO;
 
@@ -188,7 +145,7 @@ static int read_from_file(struct unpack_info *unpack, void *data, size_t len)
  * ===================== Packing Implementation =====================
  */
 
-/* Create and write TAR header */
+/* 路径过长时截断，保证tar兼容性 */
 static int write_pack_header(struct pack_info *pack, const char *path,
 			     struct kstat *stat, char type)
 {
@@ -197,15 +154,12 @@ static int write_pack_header(struct pack_info *pack, const char *path,
 	size_t path_len;
 
 	memset(&header, 0, sizeof(header));
-
-	/* Fill header fields with safe string operations */
 	path_len = strlen(path);
 	if (path_len >= sizeof(header.name)) {
 		pr_warn("pack: Path too long, truncating: %s\n", path);
 		path_len = sizeof(header.name) - 1;
 	}
 	strscpy(header.name, path, sizeof(header.name));
-
 	num_to_oct(header.mode, stat->mode & 07777, sizeof(header.mode));
 	num_to_oct(header.uid, from_kuid(&init_user_ns, stat->uid),
 		   sizeof(header.uid));
@@ -217,8 +171,6 @@ static int write_pack_header(struct pack_info *pack, const char *path,
 	header.typeflag = type;
 	strncpy(header.magic, "ustar", sizeof(header.magic) - 1);
 	strncpy(header.version, "00", sizeof(header.version) - 1);
-
-	/* Calculate and set checksum */
 	checksum = calculate_checksum(&header);
 	num_to_oct(header.chksum, checksum, sizeof(header.chksum) - 1);
 	header.chksum[sizeof(header.chksum) - 1] = ' ';
@@ -226,7 +178,7 @@ static int write_pack_header(struct pack_info *pack, const char *path,
 	return write_to_file(pack, &header, sizeof(header));
 }
 
-/* Pack a regular file */
+/* 只支持普通文件和目录，符号链接等特殊类型未处理 */
 static int pack_regular_file(struct pack_info *pack, const char *path)
 {
 	struct file *file;
@@ -242,18 +194,15 @@ static int pack_regular_file(struct pack_info *pack, const char *path)
 	if (IS_ERR(file))
 		return PTR_ERR(file);
 
-	ret = vfs_getattr(&file->f_path, &stat, 
-			  STATX_BASIC_STATS | STATX_BTIME,
+	ret = vfs_getattr(&file->f_path, &stat, STATX_BASIC_STATS | STATX_BTIME,
 			  AT_STATX_SYNC_AS_STAT);
 	if (ret)
 		goto out_close_file;
 
-	/* Write header */
-	ret = write_pack_header(pack, path, &stat, '0'); /* Regular file */
+	ret = write_pack_header(pack, path, &stat, '0');
 	if (ret)
 		goto out_close_file;
 
-	/* Allocate buffer for file content */
 	buffer = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!buffer) {
 		ret = -ENOMEM;
@@ -278,10 +227,10 @@ static int pack_regular_file(struct pack_info *pack, const char *path)
 		remaining -= bytes_read;
 	}
 
-	/* Pad to 512-byte boundary */
+	/* tar要求内容对齐512字节，否则解包会错位 */
 	if (stat.size % PACK_HEADER_SIZE) {
-		size_t padding_size = PACK_HEADER_SIZE - 
-				      (stat.size % PACK_HEADER_SIZE);
+		size_t padding_size =
+			PACK_HEADER_SIZE - (stat.size % PACK_HEADER_SIZE);
 		padding = kzalloc(padding_size, GFP_KERNEL);
 		if (!padding) {
 			ret = -ENOMEM;
@@ -302,26 +251,22 @@ out_close_file:
 	return ret;
 }
 
-/* Pack a directory recursively */
 static int pack_directory(struct pack_info *pack, const char *path);
 
 /* Directory entry callback */
-static int pack_dir_entry(struct dir_context *ctx, const char *name, 
-			  int namlen, loff_t offset, u64 ino, 
-			  unsigned int d_type)
+static int pack_dir_entry(struct dir_context *ctx, const char *name, int namlen,
+			  loff_t offset, u64 ino, unsigned int d_type)
 {
-	struct pack_dir_context *pack_ctx = container_of(ctx, 
-					struct pack_dir_context, ctx);
+	struct pack_dir_context *pack_ctx =
+		container_of(ctx, struct pack_dir_context, ctx);
 	char *full_path;
 	size_t base_len, total_len;
 	int ret = 0;
 
 	/* Skip . and .. entries */
-	if (name[0] == '.' && (namlen == 1 || 
-	    (namlen == 2 && name[1] == '.')))
+	if (name[0] == '.' && (namlen == 1 || (namlen == 2 && name[1] == '.')))
 		return 0;
 
-	/* Construct full path with bounds checking */
 	base_len = strlen(pack_ctx->base_path);
 	total_len = base_len + namlen + 2; /* +2 for '/' and '\0' */
 
@@ -336,18 +281,14 @@ static int pack_dir_entry(struct dir_context *ctx, const char *name,
 		return -ENOMEM;
 	}
 
-	snprintf(full_path, total_len, "%s/%.*s", pack_ctx->base_path, 
-		 namlen, name);
+	snprintf(full_path, total_len, "%s/%.*s", pack_ctx->base_path, namlen,
+		 name);
 
-	/* Pack the entry based on its type */
 	if (d_type == DT_REG) {
 		ret = pack_regular_file(pack_ctx->pack, full_path);
 	} else if (d_type == DT_DIR) {
 		ret = pack_directory(pack_ctx->pack, full_path);
 	}
-	/*
-	 * Add support for other file types if needed (symlinks, etc.)
-	 */
 
 	if (ret) {
 		pack_ctx->error = ret;
@@ -371,8 +312,7 @@ static int pack_directory(struct pack_info *pack, const char *path)
 	if (ret)
 		return ret;
 
-	ret = vfs_getattr(&dir_path, &stat, 
-			  STATX_BASIC_STATS | STATX_BTIME,
+	ret = vfs_getattr(&dir_path, &stat, STATX_BASIC_STATS | STATX_BTIME,
 			  AT_STATX_SYNC_AS_STAT);
 	if (ret)
 		goto out_put_path;
@@ -429,51 +369,49 @@ static int pack_path(const char *source_path, const char *output_path)
 	int ret;
 	char *zero_blocks = NULL;
 
-    /* Open output file */
-    pack.output_file = filp_open(output_path, 
-                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (IS_ERR(pack.output_file))
-        return PTR_ERR(pack.output_file);
+	pack.output_file =
+		filp_open(output_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (IS_ERR(pack.output_file))
+		return PTR_ERR(pack.output_file);
 
-    pack.offset = 0;
-    pack.total_size = 0;
+	pack.offset = 0;
+	pack.total_size = 0;
 
-    /* Get source path info */
-    ret = kern_path(source_path, LOOKUP_FOLLOW, &path);
-    if (ret)
-        goto out_close_output;
+	/* Get source path info */
+	ret = kern_path(source_path, LOOKUP_FOLLOW, &path);
+	if (ret)
+		goto out_close_output;
 
-    ret = vfs_getattr(&path, &stat, STATX_BASIC_STATS | STATX_BTIME,
-              AT_STATX_SYNC_AS_STAT);
-    if (ret)
-        goto out_put_path;
+	ret = vfs_getattr(&path, &stat, STATX_BASIC_STATS | STATX_BTIME,
+			  AT_STATX_SYNC_AS_STAT);
+	if (ret)
+		goto out_put_path;
 
-    /* Pack based on file type */
-    if (S_ISREG(stat.mode)) {
-        ret = pack_regular_file(&pack, source_path);
-    } else if (S_ISDIR(stat.mode)) {
-        ret = pack_directory(&pack, source_path);
-    } else {
-        ret = -EINVAL; /* Unsupported file type */
-        goto out_put_path;
-    }
+	if (S_ISREG(stat.mode)) {
+		ret = pack_regular_file(&pack, source_path);
+	} else if (S_ISDIR(stat.mode)) {
+		ret = pack_directory(&pack, source_path);
+	} else {
+		ret = -EINVAL;
+		goto out_put_path;
+	}
 
-    if (ret)
-        goto out_put_path;
+	if (ret)
+		goto out_put_path;
 
-    /* Write end-of-archive markers (two zero blocks) */
-    zero_blocks = kzalloc(PACK_HEADER_SIZE * 2, GFP_KERNEL);
-    if (!zero_blocks) {
-        ret = -ENOMEM;
-        goto out_put_path;
-    }
-    ret = write_to_file(&pack, zero_blocks, PACK_HEADER_SIZE * 2);
-    kfree(zero_blocks);
-    if (ret)
-        goto out_put_path;
+	/* tar规范要求结尾写两个全零块，防止解包工具误判结束 */
+	zero_blocks = kzalloc(PACK_HEADER_SIZE * 2, GFP_KERNEL);
+	if (!zero_blocks) {
+		ret = -ENOMEM;
+		goto out_put_path;
+	}
+	ret = write_to_file(&pack, zero_blocks, PACK_HEADER_SIZE * 2);
+	kfree(zero_blocks);
+	if (ret)
+		goto out_put_path;
 
-	pr_info("pack: Successfully packed %s to %s (%zu bytes)\n",
-		source_path, output_path, pack.total_size);
+	pr_info("pack: Successfully packed %s to %s (%zu bytes)\n", source_path,
+		output_path, pack.total_size);
 
 out_put_path:
 	path_put(&path);
@@ -489,92 +427,111 @@ out_close_output:
 /* Create directory recursively */
 static int create_directory_recursive(const char *path, umode_t mode)
 {
-	char *path_copy = NULL;
-	char *parent_str = NULL;
-	char *parent_dir;
+	struct path target_path;
+	char *parent_path = NULL;
 	char *last_slash;
-	struct path parent_path;
 	struct path parent;
-	struct dentry *dentry = NULL;
+	struct dentry *dentry;
 	struct inode *dir_inode;
-	size_t parent_len;
-	int ret = 0;
+	int ret;
 
-	path_copy = kstrdup(path, GFP_KERNEL);
-	if (!path_copy)
-		return -ENOMEM;
+	ret = kern_path(path, LOOKUP_FOLLOW, &target_path);
+	if (ret == 0) {
+		path_put(&target_path);
+		return 0; /* Already exists */
+	}
 
 	/* Find parent directory */
-	last_slash = strrchr(path_copy, '/');
-	if (last_slash && last_slash != path_copy) {
-		*last_slash = '\0';
-		parent_dir = path_copy;
-
-		/* Check if parent exists, create if not */
-		ret = kern_path(parent_dir, LOOKUP_FOLLOW, &parent_path);
-		if (ret) {
-			/* Parent doesn't exist, create it recursively */
-			ret = create_directory_recursive(parent_dir, 0755);
-			if (ret)
-				goto out_free_path_copy;
-		} else {
-			path_put(&parent_path);
-		}
-	}
-
-	/* Check if target directory already exists */
-	ret = kern_path(path, LOOKUP_FOLLOW, &parent_path);
-	if (ret == 0) {
-		/* Directory already exists */
-		path_put(&parent_path);
-		ret = 0;
-		goto out_free_path_copy;
-	}
-
-	/* Directory doesn't exist, create it */
 	last_slash = strrchr(path, '/');
 	if (!last_slash || last_slash == path) {
-		/* Root or invalid path */
-		ret = -EINVAL;
-		goto out_free_path_copy;
+		return -EINVAL; /* Invalid path */
 	}
 
-	parent_len = last_slash - path;
-	parent_str = kmalloc(parent_len + 1, GFP_KERNEL);
-	if (!parent_str) {
-		ret = -ENOMEM;
-		goto out_free_path_copy;
-	}
-	strncpy(parent_str, path, parent_len);
-	parent_str[parent_len] = '\0';
+	/* Create parent path string */
+	parent_path = kstrndup(path, last_slash - path, GFP_KERNEL);
+	if (!parent_path)
+		return -ENOMEM;
 
-	ret = kern_path(parent_str, LOOKUP_FOLLOW, &parent);
+	/* Recursively create parent directory */
+	ret = create_directory_recursive(parent_path, 0755);
+	if (ret && ret != -EEXIST) {
+		kfree(parent_path);
+		return ret;
+	}
+
+	/* Get parent directory path */
+	ret = kern_path(parent_path, LOOKUP_FOLLOW, &parent);
+	kfree(parent_path);
 	if (ret)
-		goto out_free_parent_str;
+		return ret;
 
 	dir_inode = d_inode(parent.dentry);
 	if (!dir_inode) {
-		ret = -ENOENT;
-		goto out_put_parent;
+		path_put(&parent);
+		return -ENOENT;
 	}
 
+	/* Create directory entry */
 	dentry = lookup_one_len(last_slash + 1, parent.dentry,
 				strlen(last_slash + 1));
 	if (IS_ERR(dentry)) {
 		ret = PTR_ERR(dentry);
-		goto out_put_parent;
+		path_put(&parent);
+		return ret;
 	}
 
 	ret = vfs_mkdir(dir_inode, dentry, mode);
+	if (ret == -EEXIST)
+		ret = 0; /* Ignore if already exists */
 
 	dput(dentry);
-out_put_parent:
 	path_put(&parent);
-out_free_parent_str:
-	kfree(parent_str);
-out_free_path_copy:
-	kfree(path_copy);
 	return ret;
+}
+
+/* 解包后恢复属主/权限，失败时仅警告不终止流程 */
+static inline int set_attrs_for_path(const char *path,
+				     struct pack_header *header)
+{
+	umode_t mode;
+	kuid_t kuid;
+	kgid_t kgid;
+	struct path p;
+	struct kstat stat;
+	struct iattr newattrs;
+	int ret;
+
+	mode = oct_to_num(header->mode, sizeof(header->mode));
+	kuid = make_kuid(&init_user_ns,
+			 oct_to_num(header->uid, sizeof(header->uid)));
+	kgid = make_kgid(&init_user_ns,
+			 oct_to_num(header->gid, sizeof(header->gid)));
+
+	ret = kern_path(path, LOOKUP_FOLLOW, &p);
+	if (ret)
+		return ret;
+
+	ret = vfs_getattr(&p, &stat, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
+	if (ret == 0) {
+		memset(&newattrs, 0, sizeof(newattrs));
+		newattrs.ia_valid = 0;
+		if (uid_valid(kuid)) {
+			newattrs.ia_uid = kuid;
+			newattrs.ia_valid |= ATTR_UID;
+		}
+		if (gid_valid(kgid)) {
+			newattrs.ia_gid = kgid;
+			newattrs.ia_valid |= ATTR_GID;
+		}
+		newattrs.ia_mode = (stat.mode & ~07777) | (mode & 07777);
+		newattrs.ia_valid |= ATTR_MODE;
+		ret = notify_change(p.dentry, &newattrs, NULL);
+		if (ret)
+			pr_warn("pack: Failed to set owner/group/mode for %s: %d\n",
+				path, ret);
+	}
+	path_put(&p);
+	return 0;
 }
 
 /* Extract regular file */
@@ -589,16 +546,11 @@ static int extract_regular_file(struct unpack_info *unpack,
 	size_t remaining;
 	size_t to_read;
 	umode_t mode;
-	kuid_t uid;
-	kgid_t gid;
 	int ret = 0;
 
 	file_size = oct_to_num(header->size, sizeof(header->size));
 	mode = oct_to_num(header->mode, sizeof(header->mode));
-	uid = make_kuid(&init_user_ns, oct_to_num(header->uid, sizeof(header->uid)));
-	gid = make_kgid(&init_user_ns, oct_to_num(header->gid, sizeof(header->gid)));
 
-	/* Create output file */
 	output_file = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, mode);
 	if (IS_ERR(output_file))
 		return PTR_ERR(output_file);
@@ -609,7 +561,6 @@ static int extract_regular_file(struct unpack_info *unpack,
 		goto out_close_file;
 	}
 
-	/* Copy file content */
 	remaining = file_size;
 	while (remaining > 0) {
 		to_read = min_t(size_t, remaining, PAGE_SIZE);
@@ -618,41 +569,29 @@ static int extract_regular_file(struct unpack_info *unpack,
 		if (ret)
 			goto out_free_buffer;
 
-		ret = kernel_write(output_file, buffer, to_read, NULL);
-		if (ret < 0)
+		if (kernel_write(output_file, buffer, to_read, NULL) !=
+		    to_read) {
+			ret = -EIO;
 			goto out_free_buffer;
+		}
 
 		remaining -= to_read;
 	}
 
-	/* Skip padding to 512-byte boundary */
 	if (file_size % PACK_HEADER_SIZE) {
-		size_t padding_size = PACK_HEADER_SIZE - 
-				      (file_size % PACK_HEADER_SIZE);
+		size_t padding_size =
+			PACK_HEADER_SIZE - (file_size % PACK_HEADER_SIZE);
 		padding = kmalloc(padding_size, GFP_KERNEL);
 		if (!padding) {
 			ret = -ENOMEM;
 			goto out_free_buffer;
 		}
-
-		ret = read_from_file(unpack, padding, padding_size);
-		/* Continue even if padding read fails */
+		read_from_file(unpack, padding, padding_size);
 		kfree(padding);
 	}
 
-	/* Set owner and group */
-	if (uid_valid(uid) && gid_valid(gid)) {
-		ret = vfs_fchown(output_file, uid, gid);
-		if (ret)
-			pr_warn("pack: Failed to set owner/group for %s: %d\n", file_path, ret);
-	}
-
-	/* Set mode (permissions) */
-	ret = vfs_fchmod(output_file, mode);
-	if (ret)
-		pr_warn("pack: Failed to set mode for %s: %d\n", file_path, ret);
-
-	ret = 0; /* Success */
+	set_attrs_for_path(file_path, header);
+	ret = 0;
 
 out_free_buffer:
 	kfree(buffer);
@@ -666,34 +605,14 @@ static int extract_directory(struct unpack_info *unpack,
 			     struct pack_header *header, const char *dir_path)
 {
 	umode_t mode;
-	kuid_t uid;
-	kgid_t gid;
-	struct path dir_p;
 	int ret;
 
 	mode = oct_to_num(header->mode, sizeof(header->mode));
-	uid = make_kuid(&init_user_ns, oct_to_num(header->uid, sizeof(header->uid)));
-	gid = make_kgid(&init_user_ns, oct_to_num(header->gid, sizeof(header->gid)));
-
 	ret = create_directory_recursive(dir_path, mode);
 	if (ret && ret != -EEXIST)
 		return ret;
 
-	/* Set owner/group/mode if directory exists */
-	ret = kern_path(dir_path, LOOKUP_FOLLOW, &dir_p);
-	if (ret)
-		return ret;
-
-	if (uid_valid(uid) && gid_valid(gid)) {
-		int rc = vfs_chown(&dir_p, uid, gid);
-		if (rc)
-			pr_warn("pack: Failed to set owner/group for dir %s: %d\n", dir_path, rc);
-	}
-	ret = vfs_chmod(&dir_p, mode);
-	if (ret)
-		pr_warn("pack: Failed to set mode for dir %s: %d\n", dir_path, ret);
-
-	path_put(&dir_p);
+	set_attrs_for_path(dir_path, header);
 	return 0;
 }
 
@@ -778,7 +697,7 @@ static int unpack_archive(const char *archive_path, const char *extract_path)
 				member_name);
 			member_name++; /* Skip the first '/' */
 		}
-		
+
 		full_path = kmalloc(extract_path_len + strlen(header.name) + 2,
 				    GFP_KERNEL);
 		if (!full_path) {
@@ -786,8 +705,7 @@ static int unpack_archive(const char *archive_path, const char *extract_path)
 			break;
 		}
 
-		snprintf(full_path, 
-			 extract_path_len + strlen(header.name) + 2,
+		snprintf(full_path, extract_path_len + strlen(header.name) + 2,
 			 "%s/%s", extract_path, header.name);
 
 		/* Extract based on file type */
@@ -807,8 +725,8 @@ static int unpack_archive(const char *archive_path, const char *extract_path)
 		}
 
 		if (ret) {
-			pr_err("pack: Failed to extract %s: %d\n", 
-			       header.name, ret);
+			pr_err("pack: Failed to extract %s: %d\n", header.name,
+			       ret);
 			kfree(full_path);
 			break;
 		}
@@ -837,8 +755,8 @@ out_close_input:
  */
 
 /*
- * insmod pack.ko cmd="pack /root/tmp /tmp/tmp.tar"
- * insmod pack.ko cmd="unpack /tmp/tmp.tar /tmp/"
+ * insmod pack.ko cmd=\"pack /root/tmp /tmp/tmp.tar\"
+ * insmod pack.ko cmd=\"unpack /tmp/tmp.tar /tmp/\"
  */
 static int __init pack_init(void)
 {
@@ -851,8 +769,8 @@ static int __init pack_init(void)
 	/* Parse parameters */
 	if (strlen(pack_cmd) > 0) {
 		/* Use sscanf to parse command string */
-		parsed_items = sscanf(pack_cmd, "%31s %255s %255s", 
-				      cmd, source, dest);
+		parsed_items =
+			sscanf(pack_cmd, "%31s %255s %255s", cmd, source, dest);
 
 		if (parsed_items != 3) {
 			pr_err("pack: Invalid cmd format. Expected: 'cmd src dst' %s\n",
