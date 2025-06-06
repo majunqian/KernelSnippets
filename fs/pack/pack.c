@@ -160,7 +160,7 @@ static int write_pack_header(struct pack_info *pack, const char *path,
 		path_len = sizeof(header.name) - 1;
 	}
 	strscpy(header.name, path, sizeof(header.name));
-	num_to_oct(header.mode, stat->mode & 07777, sizeof(header.mode));
+	num_to_oct(header.mode, stat->mode & S_IALLUGO, sizeof(header.mode));
 	num_to_oct(header.uid, from_kuid(&init_user_ns, stat->uid),
 		   sizeof(header.uid));
 	num_to_oct(header.gid, from_kgid(&init_user_ns, stat->gid),
@@ -194,7 +194,7 @@ static int pack_regular_file(struct pack_info *pack, const char *path)
 	if (IS_ERR(file))
 		return PTR_ERR(file);
 
-	ret = vfs_getattr(&file->f_path, &stat, STATX_BASIC_STATS | STATX_BTIME,
+	ret = vfs_getattr(&file->f_path, &stat, STATX_BASIC_STATS,
 			  AT_STATX_SYNC_AS_STAT);
 	if (ret)
 		goto out_close_file;
@@ -312,7 +312,7 @@ static int pack_directory(struct pack_info *pack, const char *path)
 	if (ret)
 		return ret;
 
-	ret = vfs_getattr(&dir_path, &stat, STATX_BASIC_STATS | STATX_BTIME,
+	ret = vfs_getattr(&dir_path, &stat, STATX_BASIC_STATS,
 			  AT_STATX_SYNC_AS_STAT);
 	if (ret)
 		goto out_put_path;
@@ -382,7 +382,7 @@ static int pack_path(const char *source_path, const char *output_path)
 	if (ret)
 		goto out_close_output;
 
-	ret = vfs_getattr(&path, &stat, STATX_BASIC_STATS | STATX_BTIME,
+	ret = vfs_getattr(&path, &stat, STATX_BASIC_STATS,
 			  AT_STATX_SYNC_AS_STAT);
 	if (ret)
 		goto out_put_path;
@@ -523,7 +523,8 @@ static inline int set_attrs_for_path(const char *path,
 			newattrs.ia_gid = kgid;
 			newattrs.ia_valid |= ATTR_GID;
 		}
-		newattrs.ia_mode = (stat.mode & ~07777) | (mode & 07777);
+		newattrs.ia_mode =
+			(stat.mode & ~S_IALLUGO) | (mode & S_IALLUGO);
 		newattrs.ia_valid |= ATTR_MODE;
 		ret = notify_change(p.dentry, &newattrs, NULL);
 		if (ret)
