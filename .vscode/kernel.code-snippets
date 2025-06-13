@@ -21,7 +21,7 @@
 		"body": [
 			"// SPDX-License-Identifier: GPL-2.0",
 			"/*",
-			" * ${3:${TM_FILENAME_BASE}}.c - ${2:description}",
+			" * ${2:description}",
 			" *",
 			" * Copyright (C) ${4:${CURRENT_YEAR}} ${1:author}",
 			" */",
@@ -53,7 +53,8 @@
 			"MODULE_LICENSE(\"GPL\");",
 			"MODULE_AUTHOR(\"${1:author}\");",
 			"MODULE_DESCRIPTION(\"${2:description}\");",
-			"MODULE_VERSION(\"1.0\");"
+			"MODULE_VERSION(\"1.0\");",
+			""
 		],
 		"description": "Linux kernel module initialization template with module_param_string example (checkpatch compliant, SPDX, pr_fmt uses KBUILD_MODNAME, filename as module name, MODULE_* at end)"
 	},
@@ -63,7 +64,7 @@
 		"body": [
 			"// SPDX-License-Identifier: GPL-2.0",
 			"/*",
-			" * ${3:${TM_FILENAME_BASE}}.c - ${2:description} (/proc entry example, read/write)",
+			" * ${2:description} (/proc entry example, read/write)",
 			" *",
 			" * Copyright (C) ${4:${CURRENT_YEAR}} ${1:author}",
 			" */",
@@ -163,7 +164,8 @@
 			"MODULE_LICENSE(\"GPL\");",
 			"MODULE_AUTHOR(\"${1:author}\");",
 			"MODULE_DESCRIPTION(\"${2:description} (/proc entry example, read/write)\");",
-			"MODULE_VERSION(\"1.0\");"
+			"MODULE_VERSION(\"1.0\");",
+			""
 		],
 		"description": "Linux kernel module template with /proc file entry (proc_create, seq_file, read/write, locking, cleanup, modern proc_ops, strscpy)"
 	},
@@ -173,7 +175,7 @@
 		"body": [
 			"// SPDX-License-Identifier: GPL-2.0",
 			"/*",
-			" * ${3:${TM_FILENAME_BASE}}.c - ${2:description} (simple kprobe example)",
+			" * ${2:description} (simple kprobe example)",
 			" *",
 			" * Copyright (C) ${4:${CURRENT_YEAR}} ${1:author}",
 			" */",
@@ -234,7 +236,8 @@
 			"MODULE_DESCRIPTION(\"${2:description} (simple kprobe example)\");",
 			"",
 			"module_init(${3:${TM_FILENAME_BASE}}_init);",
-			"module_exit(${3:${TM_FILENAME_BASE}}_exit);"
+			"module_exit(${3:${TM_FILENAME_BASE}}_exit);",
+			""
 		],
 		"description": "Simple Linux kernel module template with kprobe (pre_handler only) for function entry monitoring"
 	},
@@ -244,7 +247,7 @@
 		"body": [
 			"// SPDX-License-Identifier: GPL-2.0",
 			"/*",
-			" * ${3:${TM_FILENAME_BASE}}.c - ${2:description} (kretprobe example)",
+			" * ${2:description} (kretprobe example)",
 			" *",
 			" * Copyright (C) ${4:${CURRENT_YEAR}} ${1:author}",
 			" */",
@@ -338,7 +341,8 @@
 			"MODULE_DESCRIPTION(\"${2:description} (kretprobe example with timing)\");",
 			"",
 			"module_init(${3:${TM_FILENAME_BASE}}_init);",
-			"module_exit(${3:${TM_FILENAME_BASE}}_exit);"
+			"module_exit(${3:${TM_FILENAME_BASE}}_exit);",
+			""
 		],
 		"description": "Linux kernel module template with kretprobe for function entry/exit monitoring with timing analysis"
 	},
@@ -361,12 +365,11 @@
 			"# $(MODULE_NAME)-objs := file1.o file2.o",
 			"",
 			"CHECKPATCH := $(KDIR)/scripts/checkpatch.pl",
-			"SRC := $(wildcard *.c *.h)",
 			"",
 			".PHONY: all clean checkpatch modules_install help info logs",
 			".PHONY: insmod rmmod reload status",
 			"",
-			"all: checkpatch modules",
+			"all: clean checkpatch modules",
 			"",
 			"modules:",
 			"\t@echo \"Building kernel module $(MODULE_NAME)...\"",
@@ -376,8 +379,8 @@
 			"checkpatch:",
 			"\t@echo \"Running checkpatch on source files...\"",
 			"\t@if [ -f $(CHECKPATCH) ]; then \\",
-			"\t\techo \"Checking $(SRC)...\"; \\",
-			"\t\t$(CHECKPATCH) --no-tree --terse -f $(SRC) || true; \\",
+			"\t\techo \"Checking $(wildcard *.c *.h)...\"; \\",
+			"\t\t$(CHECKPATCH) --no-tree --terse -f $(wildcard *.c *.h) || true; \\",
 			"\telse \\",
 			"\t\techo \"checkpatch.pl not found: skipped\"; \\",
 			"\tfi",
@@ -385,7 +388,6 @@
 			"clean:",
 			"\t@echo \"Cleaning build files...\"",
 			"\tmake -C $(KDIR) M=$(PWD) clean",
-			"\trm -f Module.symvers modules.order",
 			"",
 			"# Install module to system (requires root)",
 			"modules_install: modules",
@@ -457,7 +459,8 @@
 			"\t@echo \"  help          - Show this help message\"",
 			"\t@echo \"\"",
 			"\t@echo \"Module name: $(MODULE_NAME)\"",
-			"\t@echo \"Kernel build dir: $(KDIR)\""
+			"\t@echo \"Kernel build dir: $(KDIR)\"",
+			"",
 		],
 		"description": "Comprehensive Makefile for Linux kernel modules with checkpatch, build, load/unload, status checking, debugging support, and help system"
 	}
