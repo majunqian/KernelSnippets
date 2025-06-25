@@ -7,6 +7,8 @@
 #include <linux/namei.h>
 #include <linux/slab.h>
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #define PACK_HEADER_SIZE 512
 
 static char pack_cmd[256] = { 0 };
@@ -17,7 +19,7 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TAR-like packing functionality in kernel space");
 
 /*
- * ===================== Structure Definitions =====================
+ * ===================== 结构体定义 =====================
  */
 
 /* tar头部结构体，字段顺序和大小需严格符合tar格式 */
@@ -62,7 +64,7 @@ struct unpack_info {
 };
 
 /*
- * ===================== Utility Functions =====================
+ * ===================== 工具函数 =====================
  */
 
 /* tar格式要求八进制字符串，最后一位为'\0'或' ' */
@@ -142,7 +144,7 @@ static int read_from_file(struct unpack_info *unpack, void *data, size_t len)
 }
 
 /*
- * ===================== Packing Implementation =====================
+ * ===================== 打包实现 =====================
  */
 
 /* 路径过长时截断，保证tar兼容性 */
@@ -421,7 +423,7 @@ out_close_output:
 }
 
 /*
- * ===================== Unpacking Implementation =====================
+ * ===================== 解包实现 =====================
  */
 
 /* Create directory recursively */
@@ -720,7 +722,7 @@ static int unpack_archive(const char *archive_path, const char *extract_path)
 			break;
 		default:
 			pr_warn("pack: Unsupported file type: %c\n",
-				header.typeflag);
+			header.typeflag);
 			/* Skip unsupported file types */
 			ret = 0;
 		}
@@ -752,7 +754,7 @@ out_close_input:
 }
 
 /*
- * ===================== Module Entry/Exit =====================
+ * ===================== 模块入口/出口 =====================
  */
 
 /*
